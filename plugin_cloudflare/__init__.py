@@ -8,9 +8,11 @@ your Cloudflare API token in Settings.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from luna_sdk import (
+    CredentialSlot,
     LunaPlugin,
     PluginContext,
     PluginManifest,
@@ -25,6 +27,9 @@ log = logging.getLogger("plugin-cloudflare")
 
 VAULT_KEY_TOKEN = "plugin_cloudflare.api_token"
 VAULT_KEY_ACCOUNT = "plugin_cloudflare.account_id"
+ENV_KEY = "LUNA_CLOUDFLARE_API_KEY"
+ENV_ACCOUNT = "LUNA_CLOUDFLARE_ACCOUNT_ID"
+ENV_BASE_URL = "LUNA_CLOUDFLARE_BASE_URL"
 
 # --- Tool definitions ---
 
@@ -279,7 +284,7 @@ SKILLS = [
 class CloudflarePlugin(LunaPlugin):
     manifest = PluginManifest(
         name="plugin-cloudflare",
-        version="0.1.0",
+        version="0.2.0",
         description="Cloudflare infrastructure management — DNS, cache, Workers, KV, Pages.",
         category="connectors",
         depends_on=["plugin-vault"],
@@ -304,39 +309,63 @@ class CloudflarePlugin(LunaPlugin):
     def active(self) -> bool:
         return self._active
 
+    def credential_slots(self) -> list[CredentialSlot]:
+        # env_base_url_var marks cloudflare proxy-provisionable: the gateway sets
+        # LUNA_CLOUDFLARE_BASE_URL (={gateway}/proxy/cloudflare) + the token via
+        # LUNA_CLOUDFLARE_API_KEY, so the real token never lands on the machine.
+        return [
+            CredentialSlot(
+                slug="cloudflare",
+                credential_name=VAULT_KEY_TOKEN,
+                env_key_var=ENV_KEY,
+                env_base_url_var=ENV_BASE_URL,
+                owner=self.manifest.name,
+            )
+        ]
+
     async def on_load(self, ctx: PluginContext) -> None:
         # Routes mount via routes.register_routes (loader pushes them ahead of
         # the SPA catch-all); no self-mount here.
-        vault = ctx.vault
-        if vault is None:
-            log.warning("Vault not available; plugin-cloudflare inactive")
-            self._active = False
-            return
-
-        try:
-            token_cred = await vault.get_credential(VAULT_KEY_TOKEN)
-            api_token = token_cred.value
-        except KeyError:
-            api_token = None
-
-        try:
-            acct_cred = await vault.get_credential(VAULT_KEY_ACCOUNT)
-            account_id = acct_cred.value
-        except KeyError:
-            account_id = None
+        api_token = await self._resolve(ctx, VAULT_KEY_TOKEN, ENV_KEY, "CLOUDFLARE_API_TOKEN")
+        account_id = await self._resolve(ctx, VAULT_KEY_ACCOUNT, ENV_ACCOUNT, "CLOUDFLARE_ACCOUNT_ID")
+        base_url = self._resolve_env(ctx, ENV_BASE_URL, "CLOUDFLARE_BASE_URL")
 
         if not api_token or not account_id:
-            log.info("plugin-cloudflare: API token or account ID not in vault; tools inactive")
+            log.info("plugin-cloudflare: API token or account ID not configured; tools inactive")
             self._active = False
             return
 
-        self._client = CloudflareClient(api_token=api_token, account_id=account_id)
+        self._client = CloudflareClient(api_token=api_token, account_id=account_id, base_url=base_url)
         self._active = True
 
         self._register_tools(ctx)
         self._register_skills(ctx)
 
-        log.info("plugin-cloudflare loaded (tools=%d skills=%d)", len(ALL_TOOLS), len(SKILLS))
+        log.info(
+            "plugin-cloudflare loaded (tools=%d skills=%d gateway=%s)",
+            len(ALL_TOOLS), len(SKILLS), bool(base_url),
+        )
+
+    async def _resolve(self, ctx: PluginContext, vault_key: str, env_key: str, native: str) -> str | None:
+        """vault → LUNA_ env → native env. The env value is the gateway token in proxy mode."""
+        vault = getattr(ctx, "vault", None)
+        if vault is not None:
+            try:
+                cred = await vault.get_credential(vault_key)
+                if (cred.value or "").strip():
+                    return cred.value.strip()
+            except KeyError:
+                pass
+            except Exception as exc:  # noqa: BLE001
+                log.warning("plugin-cloudflare: vault read failed for %s: %s", vault_key, exc)
+        return self._resolve_env(ctx, env_key, native)
+
+    def _resolve_env(self, ctx: PluginContext, env_key: str, native: str) -> str | None:
+        if getattr(ctx, "get_env", None) is not None:
+            val = (ctx.get_env(env_key) or "").strip()
+            if val:
+                return val
+        return (os.environ.get(native) or "").strip() or None
 
     def _register_tools(self, ctx: PluginContext) -> None:
         client = self._client

@@ -1,6 +1,6 @@
 [project]
 name = "plugin-cloudflare"
-version = "0.1.0"
+version = "0.2.0"
 description = "Cloudflare infrastructure management for Luna. Built on luna_sdk v0."
 readme = "README.md"
 license = { text = "MIT" }

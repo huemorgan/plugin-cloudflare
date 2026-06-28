@@ -10,10 +10,15 @@ import httpx
 class CloudflareClient:
     BASE_URL = "https://api.cloudflare.com/client/v4/"
 
-    def __init__(self, api_token: str, account_id: str) -> None:
+    def __init__(self, api_token: str, account_id: str, base_url: str | None = None) -> None:
+        # `base_url` overrides the upstream — set to `{gateway}/proxy/cloudflare`
+        # for cloud key-provisioning (api_token is then the opaque gateway token).
+        # Unset → the real Cloudflare API + real token. Trailing slash kept so
+        # relative paths like "zones" resolve correctly.
+        base = (base_url or self.BASE_URL).rstrip("/") + "/"
         self._account_id = account_id
         self._http = httpx.AsyncClient(
-            base_url=self.BASE_URL,
+            base_url=base,
             headers={"Authorization": f"Bearer {api_token}"},
             timeout=30.0,
         )
