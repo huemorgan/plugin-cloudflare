@@ -284,9 +284,10 @@ SKILLS = [
 class CloudflarePlugin(LunaPlugin):
     manifest = PluginManifest(
         name="plugin-cloudflare",
+        shown_name="Cloudflare",
         icon="cloud",
         image="assets/icon.png",
-        version="0.2.1",
+        version="0.2.2",
         description="Cloudflare infrastructure management — DNS, cache, Workers, KV, Pages.",
         category="connectors",
         depends_on=["plugin-vault"],
